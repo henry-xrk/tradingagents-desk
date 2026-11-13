@@ -1,12 +1,9 @@
 FROM python:3.13-slim
 
-ARG GIT_COMMIT=unknown
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy \
-    TRADINGAGENTS_BUILD_COMMIT=${GIT_COMMIT} \
     TRADINGAGENTS_IN_DOCKER=1 \
     PATH="/app/.venv/bin:$PATH"
 
@@ -27,6 +24,9 @@ RUN uv sync --frozen --extra dashboard --no-dev --no-install-project \
 
 COPY deploy/api-entrypoint.sh /usr/local/bin/desk-api
 RUN chmod 0755 /usr/local/bin/desk-api
+
+ARG GIT_COMMIT=unknown
+ENV TRADINGAGENTS_BUILD_COMMIT=${GIT_COMMIT}
 
 USER appuser
 EXPOSE 8000
