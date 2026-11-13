@@ -55,7 +55,7 @@ After so many requests from the community, Trading-R1 has officially launched!
 
 <div align="center">
 
-🚀 [TradingAgents](#tradingagents-framework) | ⚡ [Installation & CLI](#installation-and-cli) | 🎬 [Demo](https://www.youtube.com/watch?v=90gr5lwjIho) | 📦 [Package Usage](#tradingagents-package) | 🤝 [Contributing](#contributing) | 📄 [Citation](#citation)
+🚀 [TradingAgents](#tradingagents-framework) | ⚡ [Installation & CLI](#installation-and-cli) | 🖥️ [Research dashboard](#research-dashboard) | 🎬 [Demo](https://www.youtube.com/watch?v=90gr5lwjIho) | 📦 [Package Usage](#tradingagents-package) | 🤝 [Contributing](#contributing) | 📄 [Citation](#citation)
 
 </div>
 
@@ -240,6 +240,19 @@ An interface will appear showing results as they load, letting you track the age
 <p align="center">
   <img src="assets/cli/cli_transaction.png" width="100%" style="display: inline-block; margin: 0 2%;">
 </p>
+
+## Research dashboard
+
+The local desk is a React app and a FastAPI service beside the CLI. Production runs from Docker Compose and opens at http://127.0.0.1:5173. The API key is read by the backend from the container environment. The page does not store it, and the desk does not use ChatGPT subscription sign-in.
+
+```bash
+cp .env.example .env   # set OPENAI_API_KEY on the host; it is not baked into the image
+./scripts/desk.sh up
+```
+
+Maintenance, backups, upstream merges, and rollback are documented in `docs/desk.md`. The original `docker compose` command still runs the CLI and is separate from the desk stack. A hot-reload stack is available with `compose.desk.dev.yml` and is not the default entry.
+
+Charts use Yahoo Finance through the engine's data loader. A data failure is shown as an error. Entry, stop, and target prices are research hypotheses and appear only when the saved report has a single labeled number. Share counts, planned loss, and capital use are calculated in Python from capital inputs you enter. Fields the run did not supply stay unavailable.
 
 ## TradingAgents Package
 

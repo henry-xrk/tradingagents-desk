@@ -215,6 +215,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Local research dashboard
+node_modules/
+frontend/dist/
+data/
+
 # Cache
 **/data_cache/
 

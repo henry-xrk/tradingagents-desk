@@ -1,0 +1,39 @@
+# Optional hot-reload stack. It is not the production entry and uses the same host port.
+name: tradingagents-desk-dev
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+      args:
+        GIT_COMMIT: dev
+    image: tradingagents-desk-api:dev
+    env_file:
+      - path: .env
+        required: false
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./backend:/app/backend
+      - ./tradingagents:/app/tradingagents
+      - ./cli:/app/cli
+      - ${DESK_DATA_DIR:-./data/desk}:/home/appuser/.tradingagents
+    expose:
+      - "8000"
+
+  web:
+    image: node:22-bookworm-slim
+    working_dir: /src
+    command: ["sh", "-c", "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"]
+    environment:
+      API_PROXY_TARGET: http://api:8000
+    volumes:
+      - ./frontend:/src
+      - desk_node_modules:/src/node_modules
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  desk_node_modules:

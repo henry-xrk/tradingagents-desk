@@ -1,6 +1,9 @@
 .git
 .venv
 **/.env*
+data
+frontend/node_modules
+frontend/dist
 .claude
 .idea
 .vscode

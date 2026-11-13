@@ -1,0 +1,44 @@
+name: tradingagents-desk
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+      args:
+        GIT_COMMIT: ${DESK_GIT_COMMIT:-unknown}
+    image: tradingagents-desk-api:${DESK_IMAGE_TAG:-dev}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TRADINGAGENTS_BUILD_COMMIT: ${DESK_GIT_COMMIT:-unknown}
+      TRADINGAGENTS_HOME: /home/appuser/.tradingagents
+    volumes:
+      - ${DESK_DATA_DIR:-./data/desk}:/home/appuser/.tradingagents
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    image: tradingagents-desk-web:${DESK_IMAGE_TAG:-dev}
+    ports:
+      - "127.0.0.1:5173:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
