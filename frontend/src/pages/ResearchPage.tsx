@@ -254,7 +254,7 @@ export function ResearchPage() {
           </Panel>
         </div>
         <div className="xl:col-span-9">
-          <Tabs defaultValue={record?.status === "completed" ? "summary" : "log"}>
+          <Tabs defaultValue="summary">
             <TabsList>
               <TabsTrigger value="summary">Summary</TabsTrigger>
               <TabsTrigger value="chart">Chart and evidence</TabsTrigger>
