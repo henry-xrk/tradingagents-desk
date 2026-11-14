@@ -1,3 +1,7 @@
+# This file was modified in tradingagents-desk, a derivative of
+# TauricResearch/TradingAgents (https://github.com/TauricResearch/TradingAgents).
+# Changes remain under the Apache License, Version 2.0. See LICENSE.
+
 """Point-in-time rules shared by every dated path: data is served as of the run's date.
 
 - ``as_of`` / ``as_of_window`` clamp a date or window the model asks for to the
@@ -14,6 +18,9 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+RESEARCH_CALENDAR = ZoneInfo("America/New_York")
 
 
 def to_utc(dt: datetime) -> datetime:
@@ -33,8 +40,16 @@ def in_window(pub_dt: datetime | None, start_dt: datetime, end_dt: datetime) -> 
 
 
 def get_current_date() -> str:
-    """Today's date, YYYY-MM-DD."""
+    """Process-local date, YYYY-MM-DD. Vendor windows keep this meaning."""
     return date.today().strftime("%Y-%m-%d")
+
+
+def research_calendar_date(moment: datetime | None = None) -> str:
+    """Default research date on the America/New_York calendar."""
+    current = moment or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return current.astimezone(RESEARCH_CALENDAR).date().isoformat()
 
 
 def is_historical(run_date) -> bool:

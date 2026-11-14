@@ -9,7 +9,7 @@ from backend.errors import DashboardError
 from backend.schemas.models import AnalysisCreate
 from backend.services.progress import ANALYST_ORDER
 from cli.prompts import detect_asset_type, provider_default_url, resolve_backend_url
-from tradingagents.dataflows.date_window import get_current_date
+from tradingagents.dataflows.date_window import research_calendar_date
 from tradingagents.dataflows.symbols import normalize_symbol, safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.api_key_env import get_api_key_env
@@ -184,6 +184,6 @@ def _analysis_date(value: str) -> str:
     canonical = parsed.strftime("%Y-%m-%d")
     if canonical != value:
         raise DashboardError("analysis_date must be YYYY-MM-DD.", status=422, code="invalid")
-    if canonical > get_current_date():
+    if canonical > research_calendar_date():
         raise DashboardError("analysis_date cannot be in the future.", status=422, code="invalid")
     return canonical

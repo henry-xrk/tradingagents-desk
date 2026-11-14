@@ -64,7 +64,7 @@ def _day(value) -> str | None:
 def load_chart(ticker: str, as_of: str, *, include_candles: bool = True, loader=None) -> dict:
     """Return verified OHLCV and indicators for one symbol."""
     fetch = loader or _default_loader
-    download_started_at = _now()
+    read_at = _now()
     try:
         frame = fetch(ticker, as_of)
     except NoMarketDataError as exc:
@@ -73,7 +73,7 @@ def load_chart(ticker: str, as_of: str, *, include_candles: bool = True, loader=
         raise
     except Exception as exc:
         raise MarketDataError(public_exception(exc), code="market_data") from exc
-    fetched_at = _now()
+    meta = dict(getattr(frame, "attrs", {}).get("desk_market") or {})
 
     if frame is None or getattr(frame, "empty", True):
         raise MarketDataError(f"No market data for {ticker!r}.", code="no_market_data")
@@ -129,8 +129,10 @@ def load_chart(ticker: str, as_of: str, *, include_candles: bool = True, loader=
         "symbol": ticker,
         "as_of": as_of,
         "source": "yfinance",
-        "download_started_at": download_started_at,
-        "fetched_at": fetched_at,
+        "read_at": read_at,
+        "downloaded_at": meta.get("downloaded_at"),
+        "download_started_at": meta.get("downloaded_at"),
+        "fetched_at": read_at,
         "response_at": _now(),
         "bar_date": last["time"],
         "bar_matches_as_of": last["time"] == as_of,
@@ -139,9 +141,9 @@ def load_chart(ticker: str, as_of: str, *, include_candles: bool = True, loader=
         "change": change,
         "change_percent": change_percent,
         "currency": currency,
-        "timezone": None,
-        "cache_age_seconds": None,
-        "cache_status": "unknown",
+        "timezone": _timezone(data),
+        "cache_age_seconds": _cache_age(meta.get("cache_written_at"), read_at) if meta.get("cache_hit") else None,
+        "cache_status": "hit" if meta.get("cache_hit") else ("miss" if meta.get("downloaded_at") else "unknown"),
         "bar_complete": session["bar_complete"],
         "session": session["session"],
         "session_note": session["note"],
@@ -171,6 +173,7 @@ def reference_quote(ticker: str, as_of: str) -> dict:
             "previous_close": None,
             "change": None,
             "change_percent": None,
+            "currency": None,
             "error": exc.message,
         }
     return {
@@ -184,6 +187,7 @@ def reference_quote(ticker: str, as_of: str) -> dict:
         "previous_close": chart["previous_close"],
         "change": chart["change"],
         "change_percent": chart["change_percent"],
+        "currency": chart.get("currency"),
         "error": None,
     }
 
@@ -215,13 +219,33 @@ def quote_summary(ticker: str, as_of: str) -> dict:
     }
 
 
+def _cache_age(written_at: str | None, read_at: str) -> int | None:
+    if not written_at:
+        return None
+    try:
+        written = datetime.fromisoformat(written_at)
+        read = datetime.fromisoformat(read_at)
+    except ValueError:
+        return None
+    return max(0, int((read - written).total_seconds()))
+
+
+def _timezone(frame: pd.DataFrame):
+    if "Date" not in frame.columns or frame.empty:
+        return None
+    tz = getattr(frame["Date"].dt, "tz", None)
+    if tz is None:
+        return None
+    return getattr(tz, "key", None) or str(tz)
+
+
 def _session(bar_date: str | None) -> dict:
     """A daily bar dated today is not treated as a closed session."""
-    from tradingagents.dataflows.date_window import get_current_date
+    from tradingagents.dataflows.date_window import research_calendar_date
 
     if not bar_date:
         return {"bar_complete": None, "session": "unknown", "note": "The bar date is unknown."}
-    today = get_current_date()
+    today = research_calendar_date()
     if bar_date == today:
         return {
             "bar_complete": False,

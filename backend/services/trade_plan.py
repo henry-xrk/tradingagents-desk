@@ -59,13 +59,54 @@ def parse_labeled_price(text: str | None, label: str) -> float | None:
     return number
 
 
-def extract_hypotheses(trader_text: str | None, decision_text: str | None) -> dict:
-    """Prices from the labeled trader and portfolio-manager lines only."""
-    entry = parse_labeled_price(trader_text, "Entry Price")
-    stop = parse_labeled_price(trader_text, "Stop Loss")
-    target = parse_labeled_price(decision_text, "Price Target")
-    action = _label_value(trader_text, "Action")
-    rating = _label_value(decision_text, "Rating")
+_ACTION_WORDS = {"buy": "Buy", "sell": "Sell", "hold": "Hold", "reduce": "Reduce"}
+_RATING_WORDS = {
+    "buy": "Buy",
+    "overweight": "Overweight",
+    "hold": "Hold",
+    "underweight": "Underweight",
+    "sell": "Sell",
+}
+
+
+def _exact_choice(value: str | None, choices: dict[str, str]) -> str | None:
+    if not value:
+        return None
+    return choices.get(value.strip().lower())
+
+
+def _price_field(text: str | None, label: str) -> tuple[float | None, str]:
+    """Return a price and whether the label was missing, stated absent, unreadable, or available."""
+    if not text:
+        return None, "missing"
+    raw = None
+    found = False
+    for match in _LABEL.finditer(text):
+        if match.group("label").strip() != label:
+            continue
+        found = True
+        raw = match.group("value").strip()
+        break
+    if not found:
+        return None, "missing"
+    if raw is None or raw.lower() in _NULLISH:
+        return None, "stated_absent"
+    number = parse_labeled_price(f"**{label}**: {raw}", label)
+    if number is None:
+        return None, "unreadable"
+    return number, "available"
+
+
+def extract_hypotheses(
+    trader_text: str | None,
+    decision_text: str | None,
+    investment_text: str | None = None,
+) -> dict:
+    """Prices stay on their labeled lines. The final action comes only from the decision."""
+    decision = interpret_decision(trader_text, decision_text, investment_text)
+    entry = decision["entry_price"]
+    stop = decision["stop_loss"]
+    target = decision["price_target"]
     missing = [
         name
         for name, value in (
@@ -75,7 +116,7 @@ def extract_hypotheses(trader_text: str | None, decision_text: str | None) -> di
         )
         if value is None
     ]
-    if missing and (entry is None and stop is None and target is None):
+    if missing and entry is None and stop is None and target is None:
         status = "unavailable"
     elif missing:
         status = "partial"
@@ -84,13 +125,113 @@ def extract_hypotheses(trader_text: str | None, decision_text: str | None) -> di
     return {
         "status": status,
         "source": "generated_research",
+        **decision,
+        "missing": missing,
+    }
+
+
+def interpret_decision(
+    trader_text: str | None,
+    decision_text: str | None,
+    investment_text: str | None = None,
+) -> dict:
+    """Read labeled ratings and actions. Prose is not searched for a trade."""
+    trader_action = _exact_choice(_label_value(trader_text, "Action"), _ACTION_WORDS)
+    rating = _exact_choice(_label_value(decision_text, "Rating"), _RATING_WORDS) or _exact_choice(
+        _label_value(investment_text, "Recommendation"),
+        _RATING_WORDS,
+    )
+    action = _exact_choice(_label_value(decision_text, "Action"), _ACTION_WORDS)
+    conditions = _label_value(decision_text, "Executive Summary")
+    thesis = _label_value(decision_text, "Investment Thesis") or _label_value(investment_text, "Rationale")
+    horizon = _label_value(decision_text, "Time Horizon")
+    entry, entry_state = _price_field(trader_text, "Entry Price")
+    stop, stop_state = _price_field(trader_text, "Stop Loss")
+    target, target_state = _price_field(decision_text, "Price Target")
+    price_fields = {
+        "entry_price": entry_state,
+        "stop_loss": stop_state,
+        "price_target": target_state,
+    }
+    if rating or action:
+        final_status = "parsed"
+        result_status = "readable"
+        result_reason = None
+    else:
+        final_status = "needs_review"
+        result_status = "needs_review"
+        result_reason = "The final decision has no Rating, Recommendation, or Action label."
+    action_note = None
+    if action is None and (rating or trader_action):
+        action_note = "The final decision has no Action label. The trader proposal is not the final action."
+    stated = [
+        name
+        for name, state in price_fields.items()
+        if state == "stated_absent"
+    ]
+    if rating in {"Underweight", "Overweight"} and action is None:
+        plan_status = "not_applicable"
+        plan_reason = (
+            f"{rating} is a research rating, not a sell order. "
+            "The current holding is unknown, so no reduce quantity was calculated."
+        )
+        if stated:
+            plan_reason += " " + _stated_price_reason(stated)
+        next_step = "Check the actual holding before sizing a reduction. Do not treat the rating as an order."
+    elif entry is None or stop is None:
+        plan_status = "missing_parameters"
+        plan_reason = _stated_price_reason(stated) if stated else (
+            "No entry price or stop loss parsed as one positive number, so no share count was calculated."
+        )
+        next_step = "Use the manual calculator for prices you type. Missing research prices stay missing."
+    elif final_status != "parsed":
+        plan_status = "parse_failed"
+        plan_reason = result_reason
+        next_step = "Read the saved decision text. No share count was calculated from it."
+    else:
+        plan_status = "ready"
+        plan_reason = None
+        next_step = None
+    return {
         "action": action,
+        "action_note": action_note,
+        "trader_action": trader_action,
         "rating": rating,
+        "final_status": final_status,
+        "result_status": result_status,
+        "result_reason": result_reason,
+        "conditional": False,
+        "conditions": conditions,
+        "thesis": thesis,
+        "applies_to": None,
+        "horizon": horizon,
         "entry_price": entry,
         "stop_loss": stop,
         "price_target": target,
-        "missing": missing,
+        "price_fields": price_fields,
+        "plan_status": plan_status,
+        "plan_reason": plan_reason,
+        "next_step": next_step,
     }
+
+
+def _stated_price_reason(stated: list[str]) -> str:
+    labels = {
+        "entry_price": "entry price",
+        "stop_loss": "stop loss",
+        "price_target": "price target",
+    }
+    names = [labels[name] for name in stated]
+    if not names:
+        return "Required prices were not reported."
+    if len(names) == 1:
+        joined = names[0]
+    elif len(names) == 2:
+        joined = f"{names[0]} and {names[1]}"
+    else:
+        joined = ", ".join(names[:-1]) + f", and {names[-1]}"
+    verb = "is" if len(names) == 1 else "are"
+    return f"The report states that the {joined} {verb} not provided, so no number was invented."
 
 
 def _decimal(value: float) -> Decimal:
@@ -140,6 +281,7 @@ class PositionInputs:
     cost_bps: float = 0
     scale_in_prices: list[float] = field(default_factory=list)
     take_profit_prices: list[float] = field(default_factory=list)
+    level_source: str | None = None
 
 
 def calculate_position(inputs: PositionInputs) -> dict:
@@ -155,8 +297,10 @@ def calculate_position(inputs: PositionInputs) -> dict:
     target = inputs.price_target
     missing = _missing_inputs(inputs)
     invalidation = _invalidation(stop)
-    levels = _levels(entry, inputs.scale_in_prices, None)
-    exits = _exits(target, inputs.take_profit_prices, None, assumptions)
+    price_source = inputs.level_source or ("user" if inputs.scale_in_prices else "research_hypothesis")
+    exit_source = inputs.level_source or ("user" if inputs.take_profit_prices else "research_hypothesis")
+    levels = _levels(entry, inputs.scale_in_prices, None, price_source)
+    exits = _exits(target, inputs.take_profit_prices, None, assumptions, exit_source)
     zone = _entry_zone(inputs.scale_in_prices, entry)
 
     if missing:
@@ -276,7 +420,6 @@ def calculate_position(inputs: PositionInputs) -> dict:
     if shares == 0:
         assumptions.append("The binding limit buys fewer than one share.")
 
-    price_source = "user" if inputs.scale_in_prices else "research_hypothesis"
     scale_prices = inputs.scale_in_prices or ([entry] if entry else [])
     if inputs.scale_in_prices:
         assumptions.append(
@@ -285,7 +428,6 @@ def calculate_position(inputs: PositionInputs) -> dict:
     elif entry is not None:
         assumptions.append("Only one entry price is known, so the plan has one limit and no entry zone.")
 
-    exit_source = "user" if inputs.take_profit_prices else "research_hypothesis"
     exit_prices = inputs.take_profit_prices or ([target] if target else [])
     return {
         "status": "available",
@@ -383,23 +525,25 @@ def _entry_zone(scale_prices: list[float], entry: float | None) -> dict:
     }
 
 
-def _levels(entry: float | None, scale_prices: list[float], shares: int | None) -> list[dict]:
+def _levels(entry: float | None, scale_prices: list[float], shares: int | None, source: str) -> list[dict]:
     prices = scale_prices or ([entry] if entry is not None else [])
-    source = "user" if scale_prices else "research_hypothesis"
     return _split(shares, prices, source)
 
 
-def _exits(target: float | None, take_profits: list[float], shares: int | None, assumptions: list[str]) -> list[dict]:
+def _exits(target: float | None, take_profits: list[float], shares: int | None, assumptions: list[str], source: str) -> list[dict]:
     if take_profits:
         assumptions.append(
             "Take-profit prices were entered in the dashboard. The share count is split evenly across them."
         )
-        return _split(shares, take_profits, "user")
+        return _split(shares, take_profits, source)
     if target is not None:
-        assumptions.append(
-            "One research target was parsed. When a share count exists, the full quantity is assigned to that target because no partial-exit schedule was supplied."
-        )
-        return _split(shares, [target], "research_hypothesis")
+        if source == "manual":
+            assumptions.append("The target was typed in the manual calculator.")
+        else:
+            assumptions.append(
+                "One research target was parsed. When a share count exists, the full quantity is assigned to that target because no partial-exit schedule was supplied."
+            )
+        return _split(shares, [target], source)
     assumptions.append("No take-profit price was supplied, so exit quantities are unavailable.")
     return []
 
@@ -504,25 +648,42 @@ def assemble_trade_plan(
     hypotheses = extract_hypotheses(
         reports.get("trader_investment_plan"),
         reports.get("final_trade_decision"),
+        reports.get("investment_plan"),
     )
     preferences = preferences or {}
     prices = price_inputs or {}
-    sizing = calculate_position(
-        PositionInputs(
-            entry_price=hypotheses["entry_price"],
-            stop_loss=hypotheses["stop_loss"],
-            price_target=hypotheses["price_target"],
-            action=hypotheses["action"],
-            available_capital=preferences.get("available_capital"),
-            available_cash=preferences.get("available_cash"),
-            max_risk_amount=preferences.get("max_risk_amount"),
-            max_risk_percent=preferences.get("max_risk_percent"),
-            max_position_percent=preferences.get("max_position_percent"),
-            cost_bps=preferences.get("cost_bps") or 0,
-            scale_in_prices=list(prices.get("scale_in_prices") or []),
-            take_profit_prices=list(prices.get("take_profit_prices") or []),
-        )
+    inputs = PositionInputs(
+        entry_price=hypotheses["entry_price"],
+        stop_loss=hypotheses["stop_loss"],
+        price_target=hypotheses["price_target"],
+        action=hypotheses["action"],
+        available_capital=preferences.get("available_capital"),
+        available_cash=preferences.get("available_cash"),
+        max_risk_amount=preferences.get("max_risk_amount"),
+        max_risk_percent=preferences.get("max_risk_percent"),
+        max_position_percent=preferences.get("max_position_percent"),
+        cost_bps=preferences.get("cost_bps") or 0,
+        scale_in_prices=list(prices.get("scale_in_prices") or []),
+        take_profit_prices=list(prices.get("take_profit_prices") or []),
     )
+    if hypotheses.get("plan_status") != "ready" or hypotheses.get("final_status") != "parsed":
+        reason = hypotheses.get("plan_reason") or hypotheses.get("result_reason") or (
+            "The final decision needs review, so no share count was calculated."
+        )
+        sizing = _unavailable_sizing(
+            reason,
+            [
+                "Share count, planned loss, and capital use are calculated in Python.",
+                "A conditional or unparsed final decision does not become an unconditional order.",
+            ],
+            _invalidation(hypotheses["stop_loss"]),
+            _levels(inputs.entry_price, inputs.scale_in_prices, None, "research_hypothesis"),
+            _exits(inputs.price_target, inputs.take_profit_prices, None, [], "research_hypothesis"),
+            _entry_zone(inputs.scale_in_prices, inputs.entry_price),
+            inputs,
+        )
+    else:
+        sizing = calculate_position(inputs)
     evidence = [
         {
             "label": "Reference close",
@@ -533,17 +694,20 @@ def assemble_trade_plan(
         {
             "label": "Entry price",
             "source": "Trader proposal",
-            "status": "available" if hypotheses["entry_price"] is not None else "unavailable",
+            "status": _evidence_status(hypotheses, "entry_price"),
+            "detail": _price_field_detail(hypotheses, "entry_price"),
         },
         {
             "label": "Stop loss",
             "source": "Trader proposal",
-            "status": "available" if hypotheses["stop_loss"] is not None else "unavailable",
+            "status": _evidence_status(hypotheses, "stop_loss"),
+            "detail": _price_field_detail(hypotheses, "stop_loss"),
         },
         {
             "label": "Price target",
             "source": "Portfolio manager decision",
-            "status": "available" if hypotheses["price_target"] is not None else "unavailable",
+            "status": _evidence_status(hypotheses, "price_target"),
+            "detail": _price_field_detail(hypotheses, "price_target"),
         },
     ]
     explanation = _explanation(hypotheses, sizing)
@@ -574,7 +738,29 @@ def _reference_detail(reference: dict) -> str | None:
     bar_date = reference.get("bar_date")
     if price is None:
         return None
-    return f"Close {price} on {bar_date}"
+    return f"Close {float(price):.2f} on {bar_date}"
+
+
+def _evidence_status(hypotheses: dict, name: str) -> str:
+    state = (hypotheses.get("price_fields") or {}).get(name)
+    if state == "available":
+        return "available"
+    if state == "stated_absent":
+        return "not_provided"
+    if state == "unreadable":
+        return "unreadable"
+    return "unavailable"
+
+
+def _price_field_detail(hypotheses: dict, name: str) -> str | None:
+    state = (hypotheses.get("price_fields") or {}).get(name)
+    if state == "stated_absent":
+        return "The report states this price is not provided."
+    if state == "unreadable":
+        return "The labeled value was not one positive number."
+    if state == "missing":
+        return "No labeled price was saved."
+    return None
 
 
 def _explanation(hypotheses: dict, sizing: dict) -> str:

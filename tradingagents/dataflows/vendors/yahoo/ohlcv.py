@@ -1,5 +1,10 @@
+# This file was modified in tradingagents-desk, a derivative of
+# TauricResearch/TradingAgents (https://github.com/TauricResearch/TradingAgents).
+# Changes remain under the Apache License, Version 2.0. See LICENSE.
+
 import logging
 import os
+from datetime import UTC, datetime
 
 import pandas as pd
 import yfinance as yf
@@ -197,6 +202,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     # transient rate limit). Treat an empty/columnless cache as a miss and
     # re-fetch rather than serving the poisoned file forever.
     data = None
+    market_meta = {"cache_hit": False, "downloaded_at": None, "cache_written_at": None}
     if os.path.exists(data_file):
         cached = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
         if (
@@ -205,6 +211,11 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
             and _cache_is_fresh(data_file, as_of_dt, now)
         ):
             data = cached
+            market_meta = {
+                "cache_hit": True,
+                "downloaded_at": None,
+                "cache_written_at": datetime.fromtimestamp(os.path.getmtime(data_file), UTC).replace(microsecond=0).isoformat(),
+            }
 
     if data is None:
         # yf.download catches every error, a rate limit included, and returns
@@ -223,6 +234,11 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
             raise_for_empty(symbol, canonical, "price rows")
         replace_file(data_file, lambda temp: downloaded.to_csv(temp, index=False, encoding="utf-8"))
         data = downloaded
+        market_meta = {
+            "cache_hit": False,
+            "downloaded_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+            "cache_written_at": datetime.fromtimestamp(os.path.getmtime(data_file), UTC).replace(microsecond=0).isoformat(),
+        }
 
     data = _clean_dataframe(data)
 
@@ -253,7 +269,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     # Reject a stale frame (latest row far older than as_of_date) rather than
     # feeding year-old prices into indicators (#1021).
     _assert_ohlcv_not_stale(data, as_of_date, symbol, canonical)
-
+    data.attrs["desk_market"] = market_meta
     return data
 
 

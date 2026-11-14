@@ -34,15 +34,31 @@ function messageFrom(body: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
+export async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs = 45_000, signal: caller, ...rest } = init ?? {};
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = caller ? AbortSignal.any([caller, timeout]) : timeout;
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...rest,
+      signal,
+      headers: {
+        Accept: "application/json",
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
+    });
+  } catch (error) {
+    if (caller?.aborted) throw error;
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new ApiError("The request timed out.", 408);
+    }
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError("The request timed out.", 408);
+    }
+    throw new ApiError("The network request failed.", 0);
+  }
   const text = await response.text();
   let body: unknown = null;
   try {

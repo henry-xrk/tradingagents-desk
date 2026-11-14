@@ -259,19 +259,29 @@ class AnalysisRunner:
         return self.store.get_analysis(analysis_id)
 
     def set_trade_plan(self, analysis_id: str, plan: dict, market: dict) -> dict | None:
+        """Save a plan without replacing the research market snapshot.
+
+        `market` is retained for callers that still pass a quote. It is not written
+        over `data_sources.market` or `data_sources.research_market`.
+        """
+        del market
         with self._lock:
             session = self._sessions.get(analysis_id)
             record = session.record if session is not None else self.store.get_analysis(analysis_id)
             if record is None:
                 return None
             record["trade_plan"] = plan
-            sources = dict(record.get("data_sources") or {})
-            sources["market"] = market
-            record["data_sources"] = sources
             self.store.save_analysis(record)
             if session is not None:
                 session.record = record
             return copy.deepcopy(plan)
+
+    def remember_trade_plan(self, analysis_id: str, plan: dict) -> None:
+        """Update a live session after the store has already committed the plan."""
+        with self._lock:
+            session = self._sessions.get(analysis_id)
+            if session is not None:
+                session.record["trade_plan"] = copy.deepcopy(plan)
 
     def subscribe(self, analysis_id: str) -> queue.Queue:
         mailbox: queue.Queue = queue.Queue()
@@ -631,6 +641,7 @@ class AnalysisRunner:
         record["error"] = message
         record["error_code"] = code
         record["finished_at"] = utcnow()
+        _settle_open_agents(record)
         self._append_activity(record, message)
         self.store.save_analysis(record)
         self._emit(session, status, message, False)
@@ -687,6 +698,15 @@ class AnalysisRunner:
         record["activity"] = activity[-80:]
 
 
+def _settle_open_agents(record: dict) -> None:
+    """A finished run cannot leave a node looking active."""
+    status = dict(record.get("agent_status") or {})
+    for name, value in status.items():
+        if value == "in_progress":
+            status[name] = "not_completed"
+    record["agent_status"] = status
+
+
 def _apply_update(record: dict, changes: dict) -> bool:
     reports_changed = False
     status = changes.get("status")
@@ -696,6 +716,7 @@ def _apply_update(record: dict, changes: dict) -> bool:
             record["started_at"] = utcnow()
         if status in TERMINAL:
             record["finished_at"] = utcnow()
+            _settle_open_agents(record)
     phase = changes.get("phase")
     if phase:
         record["phase"] = phase

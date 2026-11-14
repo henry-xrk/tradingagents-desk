@@ -95,12 +95,24 @@ export interface TradePlan {
   limitations: string[];
   verified_market: {
     status: string;
-    source: string;
+    source: string | null;
     price: number | null;
     bar_date?: string | null;
     fetched_at?: string | null;
+    currency?: string | null;
     error?: string | null;
+    role?: string | null;
   };
+  calculation_market?: {
+    role?: string;
+    status?: string | null;
+    source?: string | null;
+    price?: number | null;
+    bar_date?: string | null;
+    fetched_at?: string | null;
+    currency?: string | null;
+    error?: string | null;
+  } | null;
   hypotheses: {
     status: string;
     source: string;
@@ -144,6 +156,25 @@ export interface TradePlan {
   } | null;
 }
 
+export interface FinalDecision {
+  action: string | null;
+  action_note?: string | null;
+  trader_action: string | null;
+  rating: string | null;
+  final_status: "parsed" | "needs_review";
+  result_status?: "readable" | "needs_review";
+  result_reason?: string | null;
+  conditional: boolean;
+  conditions: string | null;
+  thesis?: string | null;
+  applies_to: string | null;
+  horizon: string | null;
+  price_fields?: Record<string, string>;
+  plan_status?: string;
+  plan_reason?: string | null;
+  next_step?: string | null;
+}
+
 export interface AnalysisRecord {
   id: string;
   ticker: string;
@@ -155,6 +186,7 @@ export interface AnalysisRecord {
   reports?: Record<string, string>;
   rating: string | null;
   trade_plan?: TradePlan | null;
+  decision?: FinalDecision;
   error: string | null;
   error_code: string | null;
   data_sources: Record<string, unknown>;
@@ -194,7 +226,9 @@ export interface MarketChart {
   symbol: string;
   as_of: string;
   source: string;
-  download_started_at?: string;
+  read_at?: string;
+  downloaded_at?: string | null;
+  download_started_at?: string | null;
   fetched_at: string;
   response_at?: string;
   bar_date: string;
@@ -229,6 +263,25 @@ export interface QuoteRow {
   added_at?: string;
 }
 
+export interface HistoryPage {
+  items: AnalysisRecord[];
+  next_cursor: string | null;
+}
+
+export interface PlanVersionDetail {
+  analysis_id: string;
+  version: number;
+  ticker: string;
+  snapshot: {
+    capital?: CapitalPreferences;
+    scale_in_prices?: number[];
+    take_profit_prices?: number[];
+  };
+  plan: TradePlan;
+  created_at: string;
+  readonly: boolean;
+}
+
 export interface WatchlistResponse {
   as_of: string;
   source: string;
@@ -246,6 +299,8 @@ export interface SystemStatus {
     ok: boolean | null;
     code: string;
     message: string;
+    endpoint?: string | null;
+    matches_current?: boolean;
   };
 }
 

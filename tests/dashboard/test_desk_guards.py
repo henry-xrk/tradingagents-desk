@@ -140,7 +140,7 @@ def test_restart_marks_leftover_work_interrupted_and_keeps_reports(tmp_path):
     assert body["error_code"] == "interrupted"
     assert "not cancelled" in body["error"]
     assert body["reports"]["market_report"] == "partial"
-    assert body["agent_status"]["Market Analyst"] == "in_progress"
+    assert body["agent_status"]["Market Analyst"] == "not_completed"
 
 
 def test_queue_full_and_invalid_market_date(tmp_path):

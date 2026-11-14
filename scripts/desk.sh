@@ -1,13 +1,22 @@
 #!/bin/sh
-# Research desk maintenance. Each command stops on its own failure.
-# This script does not stash, reset, clean, or pull during container start.
+# Research desk maintenance. A failed check stops the command.
+# This script does not stash, reset, clean, or pull on startup.
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+code_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+if [ -n "${DESK_ROOT:-}" ]; then
+  root=$DESK_ROOT
+else
+  root=$code_root
+fi
 cd "$root"
-compose="docker compose -f compose.desk.yml"
-data_dir="${DESK_DATA_DIR:-$root/data/desk}"
-db="$data_dir/dashboard/research.db"
+export PYTHONPATH="$code_root${PYTHONPATH:+:$PYTHONPATH}"
+if [ -x "$root/.venv/bin/python" ]; then
+  py="$root/.venv/bin/python"
+else
+  py=python3
+fi
+compose="docker compose -f $root/compose.desk.yml"
 
 die() {
   echo "desk: $*" >&2
@@ -20,38 +29,6 @@ require_clean() {
   fi
 }
 
-backup_db() {
-  [ -f "$db" ] || die "no dashboard database at $db"
-  stamp=$(date +%Y%m%d-%H%M%S)
-  dest="$root/data/backups/$stamp"
-  mkdir -p "$dest"
-  python3 - "$db" "$dest/research.db" << 'PY'
-import sqlite3, sys
-source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
-target = sqlite3.connect(sys.argv[2])
-with target:
-    source.backup(target)
-target.close()
-source.close()
-PY
-  echo "$dest/research.db"
-}
-
-active_runs() {
-  python3 - << 'PY'
-import json, sys, urllib.request
-try:
-    with urllib.request.urlopen("http://127.0.0.1:5173/api/analyses/active", timeout=5) as response:
-        rows = json.load(response)
-except Exception as exc:
-    print(f"desk: could not read active research ({exc})", file=sys.stderr)
-    sys.exit(2)
-if rows:
-    print(f"desk: {len(rows)} analysis run(s) are still active", file=sys.stderr)
-    sys.exit(1)
-PY
-}
-
 case "${1:-}" in
   status)
     echo "branch $(git rev-parse --abbrev-ref HEAD)"
@@ -61,7 +38,7 @@ case "${1:-}" in
       exit 1
     fi
     echo "workspace clean"
-    if curl -fsS http://127.0.0.1:5173/api/health; then
+    if curl -fsS "${DESK_HEALTH_URL:-http://127.0.0.1:5173/api/health}"; then
       echo
     else
       echo "health endpoint is not responding"
@@ -74,7 +51,11 @@ case "${1:-}" in
     git log --oneline HEAD..official/main || true
     ;;
   backup)
-    echo "backup $(backup_db)"
+    "$py" -m backend.ops.backup || exit $?
+    ;;
+  restore)
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "usage: scripts/desk.sh restore <backup> <destination>"
+    "$py" -m backend.ops.backup restore "$2" "$3" || exit $?
     ;;
   merge)
     require_clean
@@ -83,38 +64,32 @@ case "${1:-}" in
     git merge --no-edit "$ref"
     ;;
   test)
-    .venv/bin/python -m pytest tests/dashboard -q
-    (cd frontend && npm run lint && npx tsc -b && npm run build)
+    "$py" -m pytest tests/dashboard -q || exit $?
+    (cd frontend && npm run lint && npx tsc -b && node --experimental-strip-types --test src/lib/deskState.test.ts && npm run build) || exit $?
+    "$py" -m backend.ops.gates stamp || exit $?
     ;;
   build)
-    require_clean
-    commit=$(git rev-parse --short HEAD)
-    export DESK_GIT_COMMIT="$commit" DESK_IMAGE_TAG="$commit"
+    identity=$("$py" -m backend.ops.gates prepare-build) || exit $?
+    commit=$(printf '%s\n' "$identity" | sed -n '1p')
+    tree=$(printf '%s\n' "$identity" | sed -n '2p')
+    tag=$(printf '%s' "$commit" | cut -c1-12)
+    export DESK_GIT_COMMIT="$commit" DESK_TREE="$tree" DESK_IMAGE_TAG="$tag"
     $compose build
-    echo "built tradingagents-desk-api:$commit and tradingagents-desk-web:$commit"
+    "$py" -m backend.ops.gates bind "$tag" || exit $?
+    echo "built tradingagents-desk-api:$tag and tradingagents-desk-web:$tag"
     ;;
   up)
-    if curl -fsS http://127.0.0.1:5173/api/health >/dev/null 2>&1; then
-      active_runs
-    fi
-    commit=${DESK_IMAGE_TAG:-$(git rev-parse --short HEAD)}
-    export DESK_GIT_COMMIT="${DESK_GIT_COMMIT:-$commit}" DESK_IMAGE_TAG="$commit"
-    $compose up -d
-    $compose ps
+    tag=$("$py" -c 'from backend.ops.gates import read_stamp; from pathlib import Path; stamp=read_stamp(Path(".")) or {}; print(str(stamp.get("commit") or "")[:12])')
+    [ -n "$tag" ] || die "tests have not passed for the current source tree"
+    export DESK_IMAGE_TAG="$tag"
+    "$py" -m backend.ops.gates up || exit $?
     ;;
   rollback)
     tag=${2:-}
     [ -n "$tag" ] || die "usage: scripts/desk.sh rollback <image-tag>"
-    docker image inspect "tradingagents-desk-api:$tag" >/dev/null
-    docker image inspect "tradingagents-desk-web:$tag" >/dev/null
-    if curl -fsS http://127.0.0.1:5173/api/health >/dev/null 2>&1; then
-      active_runs
-    fi
-    export DESK_IMAGE_TAG="$tag" DESK_GIT_COMMIT="$tag"
-    $compose up -d --no-build
-    echo "rolled back to $tag. If a database migration is incompatible, restore a backup from data/backups instead of only changing the image."
+    "$py" -m backend.ops.gates rollback "$tag" || exit $?
     ;;
   *)
-    die "usage: scripts/desk.sh status|upstream|backup|merge <ref>|test|build|up|rollback <tag>"
+    die "usage: scripts/desk.sh status|upstream|backup|restore <backup> <dest>|merge <ref>|test|build|up|rollback <tag>"
     ;;
 esac

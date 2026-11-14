@@ -23,6 +23,8 @@ FINAL TRANSACTION PROPOSAL: **BUY**
 
 DECISION = """**Rating**: Buy
 
+**Action**: Buy
+
 **Executive Summary**: Scale in near the planned entry.
 
 **Investment Thesis**: The evidence is constructive.
@@ -40,13 +42,100 @@ def test_labeled_price_rejects_placeholders_and_percentages():
     assert parse_labeled_price("**Entry Price**: $1,234.50", "Entry Price") == 1234.5
 
 
+CONDITIONAL = """**Rating**: Underweight
+
+**Executive Summary**: For AAPL, trim only if the position exceeds roughly 0.5x your standard allocation; avoid a full exit.
+
+**Investment Thesis**: The case is a conditional reduction rather than a full SELL.
+
+**Price Target**: not provided
+
+**Time Horizon**: Several weeks
+"""
+
+
+NVDA_DECISION = """**Rating**: Underweight
+
+**Executive Summary**: 对 NVDA 采取战术性减配，保留核心参与，不清仓、不做空；以个人标准配置的0.75倍作为暂定风险预算参考。
+
+**Investment Thesis**: 其所谓SELL实际上是部分减持，按给定评级应归为Underweight。材料截至2026年11月13日的NVDA收盘162.85美元。
+
+**Price Target**: not provided
+
+**Time Horizon**: 战术持有至下一次业绩更新或重要信息核实后复评
+"""
+
+NVDA_TRADER = """**Action**: Sell
+
+**Reasoning**: 研究计划建议将NVDA战术目标配置降至标准配置的0.75倍。
+
+**Entry Price**: not provided
+
+**Stop Loss**: not provided
+
+**Position Sizing**: 目标持仓为标准配置的0.75倍；若实际持仓高于目标，将超额部分分两批减至目标。
+"""
+
+
+def test_nvda_underweight_stays_readable_and_does_not_size_a_reduction():
+    hypotheses = extract_hypotheses(NVDA_TRADER, NVDA_DECISION)
+    assert hypotheses["rating"] == "Underweight"
+    assert hypotheses["final_status"] == "parsed"
+    assert hypotheses["result_status"] == "readable"
+    assert hypotheses["action"] is None
+    assert hypotheses["trader_action"] == "Sell"
+    assert hypotheses["price_fields"]["entry_price"] == "stated_absent"
+    assert hypotheses["price_fields"]["stop_loss"] == "stated_absent"
+    assert hypotheses["price_fields"]["price_target"] == "stated_absent"
+    assert "战术性减配" in hypotheses["conditions"]
+    assert hypotheses["plan_status"] == "not_applicable"
+    assert "not a sell order" in hypotheses["plan_reason"]
+    plan = assemble_trade_plan(
+        ticker="NVDA",
+        analysis_date="2026-11-13",
+        reports={"trader_investment_plan": NVDA_TRADER, "final_trade_decision": NVDA_DECISION},
+        reference={"status": "available", "source": "yfinance", "price": 162.85000610351562, "bar_date": "2026-11-13", "error": None},
+        preferences={"available_capital": 10000, "available_cash": 10000, "max_risk_amount": 500, "max_position_percent": 25},
+    )
+    assert plan["sizing"]["shares"] is None
+    assert "162.85" in plan["evidence"][0]["detail"]
+    assert "162.850006" not in plan["evidence"][0]["detail"]
+    assert hypotheses["conditions"].startswith("对 NVDA 采取战术性减配")
+
+
+def test_conditional_decision_is_not_an_unconditional_sell():
+    hypotheses = extract_hypotheses(TRADER.replace("Buy", "Sell"), CONDITIONAL)
+    assert hypotheses["rating"] == "Underweight"
+    assert hypotheses["action"] is None
+    assert hypotheses["trader_action"] == "Sell"
+    assert hypotheses["final_status"] == "parsed"
+    plan = assemble_trade_plan(
+        ticker="AAPL",
+        analysis_date="2026-11-13",
+        reports={"trader_investment_plan": TRADER.replace("Buy", "Sell"), "final_trade_decision": CONDITIONAL},
+        reference={"status": "available", "source": "yfinance", "price": 356.27, "bar_date": "2026-11-13", "error": None},
+        preferences={"available_capital": 10000, "available_cash": 10000, "max_risk_amount": 500, "max_position_percent": 25},
+    )
+    assert plan["sizing"]["shares"] is None
+    assert "not a sell order" in plan["sizing"]["reason"]
+
+
+def test_unparsed_decision_needs_review():
+    hypotheses = extract_hypotheses("no labels here", "still no labels")
+    assert hypotheses["action"] is None
+    assert hypotheses["final_status"] == "needs_review"
+    assert "no Rating" in hypotheses["result_reason"]
+
+
 def test_hypotheses_come_only_from_labeled_lines():
     hypotheses = extract_hypotheses(TRADER, DECISION)
     assert hypotheses["entry_price"] == 100
     assert hypotheses["stop_loss"] == 95
     assert hypotheses["price_target"] == 110
     assert hypotheses["action"] == "Buy"
+    assert hypotheses["trader_action"] == "Buy"
     assert hypotheses["rating"] == "Buy"
+    assert hypotheses["final_status"] == "parsed"
     assert hypotheses["status"] == "available"
 
 

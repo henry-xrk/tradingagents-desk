@@ -26,7 +26,12 @@ COPY deploy/api-entrypoint.sh /usr/local/bin/desk-api
 RUN chmod 0755 /usr/local/bin/desk-api
 
 ARG GIT_COMMIT=unknown
-ENV TRADINGAGENTS_BUILD_COMMIT=${GIT_COMMIT}
+ARG DESK_TREE=unknown
+LABEL desk.schema="3" \
+      desk.commit="${GIT_COMMIT}" \
+      desk.tree="${DESK_TREE}"
+RUN printf '%s\n' "{\"commit\":\"${GIT_COMMIT}\",\"tree\":\"${DESK_TREE}\",\"schema\":3}" > /app/desk-build.json \
+ && chown appuser:appuser /app/desk-build.json
 
 USER appuser
 EXPOSE 8000

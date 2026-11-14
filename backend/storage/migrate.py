@@ -10,7 +10,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-MIGRATION_VERSION = 1
+MIGRATION_VERSION = 3
 _PRICE_KEYS = ("scale_in_prices", "take_profit_prices")
 
 
@@ -72,19 +72,30 @@ def apply(connection: sqlite3.Connection, home: Path) -> dict[str, int]:
     )
     current = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0
     if current >= MIGRATION_VERSION:
-        return {"version": current, "paths": 0, "price_keys": 0}
+        return {"version": current, "paths": 0, "price_keys": 0, "versions": 0}
+    paths = price_keys = versions = 0
     try:
-        paths = _rewrite_paths(connection, home)
-        price_keys = _drop_global_prices(connection)
-        connection.execute(
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))",
-            (MIGRATION_VERSION,),
-        )
+        if current < 1:
+            paths = _rewrite_paths(connection, home)
+            price_keys = _drop_global_prices(connection)
+            connection.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (1, datetime('now'))"
+            )
+        if current < 2:
+            versions = _snapshot_existing_plans(connection)
+            connection.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (2, datetime('now'))"
+            )
+        if current < 3:
+            _bind_provider_checks(connection)
+            connection.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (3, datetime('now'))"
+            )
         connection.commit()
     except Exception:
         connection.rollback()
         raise
-    return {"version": MIGRATION_VERSION, "paths": paths, "price_keys": price_keys}
+    return {"version": MIGRATION_VERSION, "paths": paths, "price_keys": price_keys, "versions": versions}
 
 
 def _rewrite_paths(connection: sqlite3.Connection, home: Path) -> int:
@@ -103,6 +114,78 @@ def _rewrite_paths(connection: sqlite3.Connection, home: Path) -> int:
         )
         changed += 1
     return changed
+
+
+def _snapshot_existing_plans(connection: sqlite3.Connection) -> int:
+    """Keep the one saved plan that exists. Do not invent earlier versions."""
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plan_versions (
+            analysis_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            ticker TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            plan_json TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (analysis_id, version)
+        )
+        """
+    )
+    rows = connection.execute(
+        "SELECT id, ticker, trade_plan_json, updated_at FROM analyses WHERE trade_plan_json IS NOT NULL"
+    ).fetchall()
+    saved = 0
+    for row in rows:
+        try:
+            plan = json.loads(row["trade_plan_json"])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(plan, dict):
+            continue
+        version = int(plan.get("plan_version") or 1)
+        exists = connection.execute(
+            "SELECT 1 FROM plan_versions WHERE analysis_id = ? AND version = ?",
+            (row["id"], version),
+        ).fetchone()
+        if exists is not None:
+            continue
+        connection.execute(
+            """
+            INSERT INTO plan_versions (
+                analysis_id, version, ticker, snapshot_json, plan_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["id"],
+                version,
+                row["ticker"],
+                json.dumps(plan.get("input_snapshot") or {}, ensure_ascii=False),
+                row["trade_plan_json"],
+                row["updated_at"] or "",
+            ),
+        )
+        saved += 1
+    return saved
+
+
+def _bind_provider_checks(connection: sqlite3.Connection) -> None:
+    """Add check identity columns. Existing research rows are not rewritten."""
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS provider_checks (
+            id INTEGER PRIMARY KEY,
+            checked_at TEXT NOT NULL,
+            ok INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            message TEXT NOT NULL
+        )
+        """
+    )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(provider_checks)")}
+    if "endpoint" not in columns:
+        connection.execute("ALTER TABLE provider_checks ADD COLUMN endpoint TEXT")
+    if "credential_id" not in columns:
+        connection.execute("ALTER TABLE provider_checks ADD COLUMN credential_id TEXT")
 
 
 def _drop_global_prices(connection: sqlite3.Connection) -> int:

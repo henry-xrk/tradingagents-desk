@@ -7,7 +7,7 @@ import time
 
 from backend.services.progress import ANALYST_NAMES, ANALYST_ORDER
 from backend.services.settings import auth_requirement, provider_catalog, resolve_rounds
-from tradingagents.dataflows.date_window import get_current_date
+from tradingagents.dataflows.date_window import research_calendar_date
 from tradingagents.llm_clients.api_key_env import get_api_key_env
 from tradingagents.llm_clients.chatgpt_auth import LOGIN_HINT, signed_in_as
 from tradingagents.llm_clients.model_catalog import get_model_options
@@ -43,7 +43,8 @@ def config_options() -> dict:
             }
         )
     return {
-        "today": get_current_date(),
+        "today": research_calendar_date(),
+        "research_calendar": "America/New_York",
         "default_provider": "chatgpt" if email else "openai",
         "signed_in_email": email,
         "analysts": [{"id": key, "label": ANALYST_NAMES[key]} for key in ANALYST_ORDER],

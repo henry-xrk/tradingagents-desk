@@ -3,6 +3,21 @@
 @theme {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-ink: #1a2330;
+  --color-muted: #4d5d6d;
+  --color-faint: #6b7c8d;
+  --color-line: #d5dee6;
+  --color-line-strong: #b7c4d0;
+  --color-paper: #ffffff;
+  --color-canvas: #e8eef3;
+  --color-accent: #1a56a8;
+  --color-accent-soft: #e7f0fa;
+  --color-ok: #0c7a43;
+  --color-ok-soft: #e5f4ec;
+  --color-warn: #8a5a00;
+  --color-warn-soft: #f8f1e3;
+  --color-danger: #b42334;
+  --color-danger-soft: #f8e8ea;
 }
 
 html,
@@ -17,9 +32,47 @@ html {
 
 body {
   margin: 0;
-  background: #f3f5f7;
-  color: #1a2330;
+  overflow-x: clip;
+  background: var(--color-canvas);
+  color: var(--color-ink);
   font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.copy {
+  max-width: 68ch;
+  line-height: 1.6;
+}
+
+dialog {
+  margin: auto;
+}
+
+dialog::backdrop {
+  background: rgb(26 35 48 / 0.35);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 #root {
@@ -32,9 +85,10 @@ body {
 }
 
 .report {
-  color: #243140;
-  font-size: 0.92rem;
-  line-height: 1.55;
+  max-width: 68ch;
+  color: var(--color-ink);
+  font-size: 1rem;
+  line-height: 1.65;
 }
 
 .report h1,

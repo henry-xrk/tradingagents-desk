@@ -155,13 +155,8 @@ def _finish(graph, job, handle, final_state: dict, config: dict, usage: dict | N
             "deep_think_llm": config.get("deep_think_llm"),
             "data_vendors": dict(config.get("data_vendors") or {}),
             "output_language": config.get("output_language"),
-            "market": {
-                "source": reference.get("source"),
-                "status": reference.get("status"),
-                "bar_date": reference.get("bar_date"),
-                "fetched_at": reference.get("fetched_at"),
-                "error": reference.get("error"),
-            },
+            "market": _market_record(reference),
+            "research_market": {**_market_record(reference), "role": "research_snapshot"},
             "memory_error": memory_error,
             "report_error": report_error,
             "tools": {
@@ -234,6 +229,17 @@ def _collect_usage(messages, usage: dict) -> None:
         usage["input_tokens"] += int(input_tokens or 0)
         usage["output_tokens"] += int(output_tokens or 0)
         usage["calls_with_usage"] += 1
+
+
+def _market_record(reference: dict) -> dict:
+    return {
+        "source": reference.get("source"),
+        "status": reference.get("status"),
+        "bar_date": reference.get("bar_date"),
+        "fetched_at": reference.get("fetched_at"),
+        "currency": reference.get("currency"),
+        "error": reference.get("error"),
+    }
 
 
 def activity_from_messages(messages) -> str | None:

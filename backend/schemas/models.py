@@ -101,7 +101,8 @@ class PlanPrices(BaseModel):
 
 
 class TradePlanUpdate(CapitalPreferences, PlanPrices):
-    pass
+    expected_plan_version: int | None = None
+    save_as_default: bool = False
 
 
 class PositionSizeRequest(CapitalPreferences, PlanPrices):

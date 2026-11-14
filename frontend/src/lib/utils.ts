@@ -32,31 +32,6 @@ export function parseOptionalNumber(value: string): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
-export function numberError(
-  value: string,
-  label: string,
-  options?: { min?: number; max?: number; allowEmpty?: boolean },
-): string | null {
-  const text = value.trim();
-  if (!text) return options?.allowEmpty === false ? `${label} is required.` : null;
-  const number = Number(text);
-  if (!Number.isFinite(number)) return `${label} must be a finite number.`;
-  if (options?.min !== undefined && number < options.min) return `${label} must be at least ${options.min}.`;
-  if (options?.max !== undefined && number > options.max) return `${label} must be at most ${options.max}.`;
-  return null;
-}
-
-export function priceListError(value: string): string | null {
-  if (!value.trim()) return null;
-  for (const part of value.split(",")) {
-    const text = part.trim();
-    if (!text) continue;
-    const number = Number(text);
-    if (!Number.isFinite(number) || number <= 0) return `"${text}" must be a positive finite price.`;
-  }
-  return null;
-}
-
 export function parsePriceList(value: string): number[] {
   const prices: number[] = [];
   for (const part of value.split(",")) {

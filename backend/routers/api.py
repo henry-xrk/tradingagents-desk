@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import queue
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -22,7 +23,7 @@ from backend.schemas.models import (
 )
 from backend.services.market_data import MarketDataError, load_chart, quote_summary, reference_quote
 from backend.services.options import config_options
-from backend.services.provider_check import probe_openai
+from backend.services.provider_check import credential_fingerprint, probe_openai
 from backend.services.reports import resolve_html_report
 from backend.services.runner import TERMINAL
 from backend.services.settings import canonical_ticker, parse_calendar_date, prepare_settings
@@ -32,9 +33,11 @@ from backend.services.trade_plan import (
     PositionInputs,
     assemble_trade_plan,
     calculate_position,
+    interpret_decision,
 )
-from backend.storage.db import ACTIVE_STATUSES, utcnow
-from tradingagents.dataflows.date_window import get_current_date
+from backend.storage.db import ACTIVE_STATUSES, PlanConflict, decode_cursor, encode_cursor, utcnow
+from backend.storage.migrate import MIGRATION_VERSION
+from tradingagents.dataflows.date_window import research_calendar_date
 from tradingagents.llm_clients.chatgpt_auth import LOGIN_HINT, signed_in_as
 
 router = APIRouter()
@@ -43,8 +46,54 @@ _HIDDEN = {"fingerprint"}
 _SIZING_WRAP = {"entry_zone", "limit_entries", "exits", "invalidation", "assumptions", "inputs"}
 
 
+def _current_validation(check: dict | None) -> dict:
+    host, fingerprint = credential_fingerprint()
+    if not check or not check.get("credential_id"):
+        return {
+            "checked_at": None if not check else check.get("checked_at"),
+            "ok": None,
+            "code": "not_checked" if not check else "stale",
+            "message": "No connection test has been run."
+            if not check
+            else "The saved connection check does not match the current endpoint or credential configuration.",
+            "endpoint": host,
+            "matches_current": False,
+        }
+    matches = check.get("credential_id") == fingerprint and (check.get("endpoint") or "") == host
+    if not matches:
+        return {
+            "checked_at": check.get("checked_at"),
+            "ok": None,
+            "code": "stale",
+            "message": "The saved connection check does not match the current endpoint or credential configuration.",
+            "endpoint": host,
+            "matches_current": False,
+        }
+    return {
+        "checked_at": check.get("checked_at"),
+        "ok": check.get("ok"),
+        "code": check.get("code"),
+        "message": check.get("message"),
+        "endpoint": host,
+        "matches_current": True,
+    }
+
+
 def _public(record: dict) -> dict:
-    return {key: value for key, value in record.items() if key not in _HIDDEN}
+    body = {key: value for key, value in record.items() if key not in _HIDDEN}
+    if body.get("status") in {"completed", "failed", "timed_out", "stopped", "interrupted"}:
+        agents = dict(body.get("agent_status") or {})
+        body["agent_status"] = {
+            name: "not_completed" if value == "in_progress" else value
+            for name, value in agents.items()
+        }
+    reports = body.get("reports") or {}
+    body["decision"] = interpret_decision(
+        reports.get("trader_investment_plan"),
+        reports.get("final_trade_decision"),
+        reports.get("investment_plan"),
+    )
+    return body
 
 
 def _http(exc: DashboardError) -> HTTPException:
@@ -62,33 +111,47 @@ def _market_http(exc: MarketDataError) -> HTTPException:
     )
 
 
+def _baked_build() -> dict[str, str]:
+    """Identity written into the image. A runtime environment value cannot replace it."""
+    path = Path(os.environ.get("DESK_BUILD_FILE", "/app/desk-build.json"))
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict):
+            return {
+                "commit": str(payload.get("commit") or "unknown"),
+                "tree": str(payload.get("tree") or "unknown"),
+            }
+    return {"commit": "unknown", "tree": "unknown"}
+
+
 @router.get("/api/health")
 def health():
+    build = _baked_build()
     return {
         "status": "ok",
         "service": "tradingagents-dashboard",
         "version": tradingagents.__version__,
-        "commit": os.environ.get("TRADINGAGENTS_BUILD_COMMIT") or "unknown",
-        "today": get_current_date(),
+        "commit": build["commit"],
+        "tree": build["tree"],
+        "schema": MIGRATION_VERSION,
+        "today": research_calendar_date(),
+        "research_calendar": "America/New_York",
     }
 
 
 @router.get("/api/system")
 def system_status(request: Request):
-    check = request.app.state.store.latest_provider_check()
+    check = _current_validation(request.app.state.store.latest_provider_check())
     return {
         "service": "tradingagents-dashboard",
         "version": tradingagents.__version__,
-        "commit": os.environ.get("TRADINGAGENTS_BUILD_COMMIT") or "unknown",
+        "commit": _baked_build()["commit"],
         "openai_api_key_configured": bool(os.environ.get("OPENAI_API_KEY")),
-        "configured_means": "A configured key is not proof that it is valid or that the account has balance.",
-        "validation": check
-        or {
-            "checked_at": None,
-            "ok": None,
-            "code": "not_checked",
-            "message": "No connection test has been run.",
-        },
+        "configured_means": "A configured key is not proof that it is valid or that the account has balance. A connection check is not a completed research run.",
+        "validation": check,
     }
 
 
@@ -102,8 +165,12 @@ def validate_provider(body: ValidateRequest, request: Request):
                 code="confirm_required",
             )
         )
+    host, fingerprint = credential_fingerprint()
     result = probe_openai()
-    return request.app.state.store.save_provider_check(result)
+    result["endpoint"] = host
+    result["credential_id"] = fingerprint
+    saved = request.app.state.store.save_provider_check(result)
+    return _current_validation(saved)
 
 
 @router.get("/api/auth/status")
@@ -134,7 +201,7 @@ def put_preferences(body: CapitalPreferences, request: Request):
 
 @router.get("/api/watchlist")
 def get_watchlist(request: Request, as_of: str | None = None):
-    day = as_of or get_current_date()
+    day = as_of or research_calendar_date()
     rows = []
     for item in request.app.state.store.list_watchlist():
         quote = quote_summary(item["ticker"], day)
@@ -166,7 +233,7 @@ def remove_watch(ticker: str, request: Request):
 @router.get("/api/market/{ticker}")
 def market(ticker: str, as_of: str | None = None):
     try:
-        day = parse_calendar_date(as_of) if as_of else get_current_date()
+        day = parse_calendar_date(as_of) if as_of else research_calendar_date()
         symbol = canonical_ticker(ticker)
         return load_chart(symbol, day)
     except DashboardError as exc:
@@ -191,6 +258,7 @@ def position_size(body: PositionSizeRequest):
             cost_bps=body.cost_bps,
             scale_in_prices=list(body.scale_in_prices),
             take_profit_prices=list(body.take_profit_prices),
+            level_source="manual",
         )
     )
     wrapped = {key: sizing[key] for key in _SIZING_WRAP}
@@ -288,41 +356,75 @@ def rebuild_trade_plan(analysis_id: str, body: TradePlanUpdate, request: Request
     record = runner.get(analysis_id)
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Analysis not found."})
-    preferences = store.save_preferences(body.model_dump())
     prices = {
         "scale_in_prices": list(body.scale_in_prices),
         "take_profit_prices": list(body.take_profit_prices),
     }
-    version = int((record.get("trade_plan") or {}).get("plan_version") or 0) + 1
     snapshot = {
         "analysis_id": analysis_id,
         "ticker": record["ticker"],
-        "plan_version": version,
-        "capital": preferences,
+        "capital": {
+            "available_capital": body.available_capital,
+            "available_cash": body.available_cash,
+            "max_risk_amount": body.max_risk_amount,
+            "max_risk_percent": body.max_risk_percent,
+            "max_position_percent": body.max_position_percent,
+            "cost_bps": body.cost_bps,
+        },
         "scale_in_prices": prices["scale_in_prices"],
         "take_profit_prices": prices["take_profit_prices"],
+        "save_as_default": body.save_as_default,
     }
-    store.save_plan_draft(analysis_id, record["ticker"], version, snapshot)
-    reference = reference_quote(record["ticker"], record["analysis_date"])
+    verified = frozen_research_market(record.get("data_sources") or {}, record.get("trade_plan"))
+    calculation = _calculation_market(reference_quote(record["ticker"], record["analysis_date"]))
     plan = assemble_trade_plan(
         ticker=record["ticker"],
         analysis_date=record["analysis_date"],
         reports=record.get("reports") or {},
-        reference=reference,
-        preferences=preferences,
+        reference=verified,
+        preferences=snapshot["capital"],
         price_inputs=prices,
-        plan_version=version,
         input_snapshot=snapshot,
     )
-    market = {
-        "source": reference.get("source"),
-        "status": reference.get("status"),
-        "bar_date": reference.get("bar_date"),
-        "fetched_at": reference.get("fetched_at"),
-        "error": reference.get("error"),
-    }
-    saved = runner.set_trade_plan(analysis_id, plan, market)
-    return saved
+    plan["verified_market"] = verified
+    plan["calculation_market"] = calculation
+    try:
+        saved_version = store.commit_rebuilt_plan(
+            analysis_id=analysis_id,
+            ticker=record["ticker"],
+            snapshot=snapshot,
+            plan=plan,
+            expected_plan_version=body.expected_plan_version,
+            preferences=snapshot["capital"] if body.save_as_default else None,
+        )
+    except PlanConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "plan_conflict",
+                "message": "This plan was saved again after you opened it. Reload the saved plan before saving.",
+                "current_plan_version": exc.current,
+            },
+        ) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Analysis not found."}) from exc
+    runner.remember_trade_plan(analysis_id, saved_version["plan"])
+    return saved_version["plan"]
+
+
+@router.get("/api/analyses/{analysis_id}/plan-versions")
+def list_plan_versions(analysis_id: str, request: Request):
+    if request.app.state.runner.get(analysis_id) is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Analysis not found."})
+    return request.app.state.store.list_plan_versions(analysis_id)
+
+
+@router.get("/api/analyses/{analysis_id}/plan-versions/{version}")
+def get_plan_version(analysis_id: str, version: int, request: Request):
+    row = request.app.state.store.get_plan_version(analysis_id, version)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Plan version not found."})
+    return row
 
 
 @router.get("/api/analyses/{analysis_id}/report")
@@ -344,6 +446,7 @@ def history(
     ticker: str | None = None,
     status: str | None = None,
     analysis_date: str | None = None,
+    cursor: str | None = None,
 ):
     allowed = {
         "queued",
@@ -367,13 +470,22 @@ def history(
             day = parse_calendar_date(analysis_date)
         except DashboardError as exc:
             raise _http(exc) from exc
+    before = None
+    if cursor:
+        try:
+            before = decode_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"code": "invalid", "message": "Unknown history cursor."}) from exc
     rows = request.app.state.store.list_analyses(
-        limit=limit,
+        limit=limit + 1,
         statuses=(status,) if status else None,
         ticker=ticker.strip() if ticker else None,
         analysis_date=day,
+        before=before,
     )
-    return [_public(row) for row in rows]
+    page = rows[:limit]
+    next_cursor = encode_cursor(page[-1]["created_at"], page[-1]["id"]) if len(rows) > limit and page else None
+    return {"items": [_public(row) for row in page], "next_cursor": next_cursor}
 
 
 @router.get("/api/history/{analysis_id}")
@@ -388,6 +500,48 @@ def report_html(path: str):
     except DashboardError as exc:
         raise _http(exc) from exc
     return FileResponse(resolved, media_type="text/html")
+
+
+def frozen_research_market(sources: dict, plan: dict | None) -> dict:
+    """The market record stored with the research, not a quote fetched during recalculation."""
+    research = sources.get("research_market") if isinstance(sources, dict) else None
+    if isinstance(research, dict):
+        market = dict(research)
+        market["role"] = "research_snapshot"
+        return market
+    stored = sources.get("market") if isinstance(sources, dict) else None
+    if isinstance(stored, dict):
+        market = dict(stored)
+        market["role"] = "stored_market_record"
+        return market
+    verified = plan.get("verified_market") if isinstance(plan, dict) else None
+    if isinstance(verified, dict):
+        market = dict(verified)
+        market["role"] = "stored_market_record"
+        return market
+    return {
+        "status": "unavailable",
+        "source": None,
+        "price": None,
+        "bar_date": None,
+        "fetched_at": None,
+        "currency": None,
+        "error": None,
+        "role": "unknown",
+    }
+
+
+def _calculation_market(reference: dict) -> dict:
+    return {
+        "role": "calculation_snapshot",
+        "status": reference.get("status"),
+        "source": reference.get("source"),
+        "price": reference.get("price"),
+        "bar_date": reference.get("bar_date"),
+        "fetched_at": reference.get("fetched_at"),
+        "currency": reference.get("currency"),
+        "error": reference.get("error"),
+    }
 
 
 def _next_event(mailbox: queue.Queue):
