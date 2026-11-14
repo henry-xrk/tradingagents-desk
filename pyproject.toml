@@ -1,3 +1,7 @@
+# This file was modified in tradingagents-desk, a derivative of
+# TauricResearch/TradingAgents (https://github.com/TauricResearch/TradingAgents).
+# Changes remain under the Apache License, Version 2.0. See LICENSE.
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"

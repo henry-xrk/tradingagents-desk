@@ -1,3 +1,11 @@
+# tradingagents-desk
+
+This repository is a personal research desk built on [TradingAgents](https://github.com/TauricResearch/TradingAgents) by Tauric Research. It is not the official TradingAgents project.
+
+The upstream project and this derivative are licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE). This file was modified for the desk. The other upstream files modified here are `.dockerignore`, `.env.example`, `.gitignore`, `pyproject.toml`, and `tests/conftest.py`. The desk itself is added under `backend/`, `frontend/`, `deploy/`, `docs/desk.md`, and `scripts/desk.sh`.
+
+TradingAgents is research software. It is not financial, investment, or trading advice. That disclaimer is repeated below and published at <https://tauric.ai/disclaimer/>.
+
 <p align="center">
   <img src="tradingagents/assets/tauric-logo.svg" width="60%" alt="Tauric Research">
 </p>
