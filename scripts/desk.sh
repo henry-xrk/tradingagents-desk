@@ -69,9 +69,9 @@ case "${1:-}" in
     fi
     ;;
   upstream)
-    git fetch origin
-    echo "Commits on origin/main that are not in HEAD:"
-    git log --oneline HEAD..origin/main || true
+    git fetch https://github.com/TauricResearch/TradingAgents.git main:refs/remotes/official/main
+    echo "Commits on official/main that are not in HEAD:"
+    git log --oneline HEAD..official/main || true
     ;;
   backup)
     echo "backup $(backup_db)"

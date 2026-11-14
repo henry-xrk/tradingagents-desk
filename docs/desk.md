@@ -2,7 +2,7 @@
 
 The desk runs beside the TradingAgents CLI. `docker-compose.yml` still starts the CLI. The desk uses `compose.desk.yml` and is opened at http://127.0.0.1:5173. Port 5173 is bound only on the loopback address. The API container is not published on the host; the web container proxies `/api` to the Compose service name `api`.
 
-`origin` remains `https://github.com/TauricResearch/TradingAgents.git`. Local desk work stays on the `desk` branch, which has no upstream. Do not push `desk` to `origin`. Update with fetch and merge, not rebase.
+Agent updates come from <https://github.com/TauricResearch/TradingAgents>. `./scripts/desk.sh upstream` fetches that repository's `main` into `official/main`. It does not use the remote named `origin`. Review those commits, then merge `official/main` into a clean worktree. Use merge, not rebase. Push the `desk` branch to this repository. Do not push it to Tauric Research.
 
 ## Three configuration layers
 
@@ -45,7 +45,7 @@ Back up the desk database:
 Merge a fetched upstream ref into the clean `desk` branch. Resolve conflicts yourself, then run the tests:
 
 ```bash
-./scripts/desk.sh merge origin/main
+./scripts/desk.sh merge official/main
 ./scripts/desk.sh test
 ```
 
